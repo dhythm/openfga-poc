@@ -19,15 +19,21 @@ type project
     define editor: [user] or manager
     define viewer: [user, organization#member] or editor
 
-# ファイル: プロジェクトの権限を継承しつつ、個別共有と閲覧禁止(but not)が可能
+# ファイル: プロジェクトの権限を継承しつつ、個別共有・期限付き共有(condition)・閲覧禁止(but not)が可能
 type file
   relations
     define project: [project]
     define owner: [user]
     define editor: [user] or owner or editor from project
-    define viewer: [user] or editor or viewer from project
+    define viewer: [user, user with non_expired_grant] or editor or viewer from project
     define restricted: [user]
     define can_view: viewer but not restricted
     define can_edit: editor but not restricted
     define can_delete: (owner or manager from project) but not restricted
     define can_share: (owner or manager from project) but not restricted
+
+# 期限付き共有: 判定時刻(current_time)が 付与日時 + 有効期間 より前なら有効
+# grant_time / grant_duration はタプル側、current_time は判定リクエスト側から渡す
+condition non_expired_grant(current_time: timestamp, grant_time: timestamp, grant_duration: duration) {
+  current_time < grant_time + grant_duration
+}

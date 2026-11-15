@@ -4,7 +4,7 @@
  */
 import { beforeAll, describe, expect, it } from "vitest";
 import { createAuthz, type Authz } from "../src/authz.js";
-import { FILES, USERS } from "../src/scenario.js";
+import { FILES, SHARE_EXPIRES_AT, USERS } from "../src/scenario.js";
 
 // 文字列は [閲覧 V / 編集 E / 削除 D / 共有 S]、"-" は拒否
 const EXPECTED: Record<string, Record<string, string>> = {
@@ -33,6 +33,12 @@ function toCodeMatrix(matrix: Awaited<ReturnType<Authz["checkAll"]>>["matrix"]) 
 
 const apiUrl = process.env.FGA_API_URL ?? "http://localhost:8080";
 
+// 判定時刻（condition の current_time）。Erin への共有期限 SHARE_EXPIRES_AT を基準にする
+const DAY = 24 * 60 * 60 * 1000;
+const AT_EXPIRY = SHARE_EXPIRES_AT;
+const IN_PERIOD = new Date(AT_EXPIRY.getTime() - DAY);
+const AFTER_EXPIRY = new Date(AT_EXPIRY.getTime() + DAY);
+
 describe("OpenFGA による 100 パターン判定", () => {
   let authz: Authz;
 
@@ -41,7 +47,7 @@ describe("OpenFGA による 100 パターン判定", () => {
   });
 
   it("初期状態の権限表が仕様どおり（許可58 / 拒否42）", async () => {
-    const result = await authz.checkAll();
+    const result = await authz.checkAll({ at: IN_PERIOD });
     expect(toCodeMatrix(result.matrix)).toEqual(EXPECTED);
     expect(result.allowedCount).toBe(58);
     expect(result.total).toBe(100);
@@ -49,22 +55,22 @@ describe("OpenFGA による 100 パターン判定", () => {
 
   it("What-if: Erin を組織メンバーに追加すると、全社公開の Web プロジェクトが見えるようになる", async () => {
     await authz.setWhatIf("erin-joins", true);
-    const m = toCodeMatrix((await authz.checkAll()).matrix);
+    const m = toCodeMatrix((await authz.checkAll({ at: IN_PERIOD })).matrix);
     expect(m.erin).toEqual({ design: "V---", spec: "V---", handover: "V---", plan: "----", minutes: "----" });
     await authz.setWhatIf("erin-joins", false);
-    expect(toCodeMatrix((await authz.checkAll()).matrix)).toEqual(EXPECTED);
+    expect(toCodeMatrix((await authz.checkAll({ at: IN_PERIOD })).matrix)).toEqual(EXPECTED);
   });
 
   it("What-if: Carol を組織管理者に昇格すると、全プロジェクトのマネージャー権限を継承する", async () => {
     await authz.setWhatIf("carol-admin", true);
-    const m = toCodeMatrix((await authz.checkAll()).matrix);
+    const m = toCodeMatrix((await authz.checkAll({ at: IN_PERIOD })).matrix);
     expect(m.carol).toEqual({ design: "VEDS", spec: "VEDS", handover: "VEDS", plan: "VEDS", minutes: "VEDS" });
     await authz.setWhatIf("carol-admin", false);
   });
 
   it("What-if: Alice を議事録の閲覧禁止にすると、組織オーナーでも拒否される（but not）", async () => {
     await authz.setWhatIf("alice-restricted", true);
-    const m = toCodeMatrix((await authz.checkAll()).matrix);
+    const m = toCodeMatrix((await authz.checkAll({ at: IN_PERIOD })).matrix);
     expect(m.alice.minutes).toBe("----");
     await authz.setWhatIf("alice-restricted", false);
   });
@@ -74,7 +80,44 @@ describe("OpenFGA による 100 パターン判定", () => {
   });
 
   it("ListObjects: Dave が閲覧できるファイル一覧を逆引きできる", async () => {
-    const files = await authz.listViewableFiles("dave");
+    const files = await authz.listViewableFiles("dave", { at: IN_PERIOD });
     expect(files.sort()).toEqual(["design", "handover", "spec"]);
+  });
+});
+
+describe("condition: 期限付き共有（Erin への納品物の共有は 30 日間）", () => {
+  let authz: Authz;
+
+  beforeAll(async () => {
+    authz = await createAuthz({ apiUrl, storeName: `test-cond-${Date.now()}` });
+  });
+
+  it("期限内は閲覧できる", async () => {
+    const m = toCodeMatrix((await authz.checkAll({ at: IN_PERIOD })).matrix);
+    expect(m.erin.handover).toBe("V---");
+  });
+
+  it("期限ちょうど（current_time < 期限 を満たさない）で拒否される", async () => {
+    const m = toCodeMatrix((await authz.checkAll({ at: AT_EXPIRY })).matrix);
+    expect(m.erin.handover).toBe("----");
+  });
+
+  it("期限切れ後は Erin の許可だけが消え、他の 57 件は変わらない", async () => {
+    const result = await authz.checkAll({ at: AFTER_EXPIRY });
+    const m = toCodeMatrix(result.matrix);
+    expect(m).toEqual({ ...EXPECTED, erin: { ...EXPECTED.erin, handover: "----" } });
+    expect(result.allowedCount).toBe(57);
+  });
+
+  it("期限切れ後でも、組織に入社すれば全社公開の経路で閲覧できる（条件は経路ごとに評価される）", async () => {
+    await authz.setWhatIf("erin-joins", true);
+    const m = toCodeMatrix((await authz.checkAll({ at: AFTER_EXPIRY })).matrix);
+    expect(m.erin.handover).toBe("V---");
+    await authz.setWhatIf("erin-joins", false);
+  });
+
+  it("ListObjects にも判定時刻が効く", async () => {
+    expect(await authz.listViewableFiles("erin", { at: IN_PERIOD })).toEqual(["handover"]);
+    expect(await authz.listViewableFiles("erin", { at: AFTER_EXPIRY })).toEqual([]);
   });
 });

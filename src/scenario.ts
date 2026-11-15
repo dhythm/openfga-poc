@@ -1,4 +1,4 @@
-import type { ClientBatchCheckItem, TupleKey } from "@openfga/sdk";
+import type { ClientBatchCheckItem, RelationshipCondition, TupleKey } from "@openfga/sdk";
 
 export type Action = "can_view" | "can_edit" | "can_delete" | "can_share";
 
@@ -30,7 +30,29 @@ export const ACTIONS: readonly { relation: Action; label: string }[] = [
   { relation: "can_share", label: "共有" },
 ];
 
-export type Tuple = TupleKey & { note: string };
+export type Tuple = TupleKey & { note: string; condition?: RelationshipCondition };
+
+export type ShareGrant = { grant_time: string; grant_duration: string };
+
+const SHARE_DURATION_HOURS = 720; // 30 日
+const GRANTED_DAYS_AGO = 14;
+
+/**
+ * Erin への期限付き共有（condition non_expired_grant のタプル側パラメータ）。
+ * 基準日の 14 日前 0 時(UTC)に 30 日間で付与したことにする → いつデモしても期限内から始まる
+ */
+export function shareGrantFor(base: Date): ShareGrant {
+  const granted = Date.UTC(base.getUTCFullYear(), base.getUTCMonth(), base.getUTCDate() - GRANTED_DAYS_AGO);
+  return { grant_time: new Date(granted).toISOString(), grant_duration: `${SHARE_DURATION_HOURS}h` };
+}
+
+export function shareExpiresAt(grant: ShareGrant): Date {
+  const hours = Number(grant.grant_duration.replace(/h$/, ""));
+  return new Date(Date.parse(grant.grant_time) + hours * 60 * 60 * 1000);
+}
+
+export const SHARE_GRANT = shareGrantFor(new Date());
+export const SHARE_EXPIRES_AT = shareExpiresAt(SHARE_GRANT);
 
 /** 初期状態の関係データ（＝誰がどこに所属し、何を共有されているか） */
 export const BASE_TUPLES: readonly Tuple[] = [
@@ -50,7 +72,13 @@ export const BASE_TUPLES: readonly Tuple[] = [
     note: `${f.name} は ${f.project} 配下`,
   })),
   { user: "user:dave", relation: "owner", object: "file:spec", note: "Dave は要件定義書の作成者" },
-  { user: "user:erin", relation: "viewer", object: "file:handover", note: "Erin に納品物だけ個別共有" },
+  {
+    user: "user:erin",
+    relation: "viewer",
+    object: "file:handover",
+    condition: { name: "non_expired_grant", context: { ...SHARE_GRANT } },
+    note: "Erin に納品物だけ 30 日間の期限付きで共有（condition）",
+  },
   { user: "user:bob", relation: "owner", object: "file:plan", note: "Bob は買収計画の作成者" },
   { user: "user:carol", relation: "viewer", object: "file:plan", note: "Carol に買収計画を個別共有" },
   { user: "user:bob", relation: "restricted", object: "file:minutes", note: "Bob は議事録を閲覧禁止（利益相反）" },
@@ -77,8 +105,15 @@ export function fromCorrelationId(id: string): { user: string; file: string; act
   return { user, file, action };
 }
 
-/** 5人 × 5ファイル × 4操作 = 100 件の Check リクエスト */
-export function buildCheckItems(): ClientBatchCheckItem[] {
+/** condition に渡すリクエスト側コンテキスト */
+export function requestContext(at: Date): { current_time: string } {
+  if (Number.isNaN(at.getTime())) throw new Error("invalid date");
+  return { current_time: at.toISOString() };
+}
+
+/** 5人 × 5ファイル × 4操作 = 100 件の Check リクエスト（判定時刻 at を condition に渡す） */
+export function buildCheckItems(at: Date = new Date()): ClientBatchCheckItem[] {
+  const context = requestContext(at);
   return USERS.flatMap((u) =>
     FILES.flatMap((f) =>
       ACTIONS.map((a) => ({
@@ -86,6 +121,7 @@ export function buildCheckItems(): ClientBatchCheckItem[] {
         relation: a.relation,
         object: `file:${f.id}`,
         correlationId: toCorrelationId(u.id, f.id, a.relation),
+        context,
       })),
     ),
   );

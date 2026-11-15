@@ -1,12 +1,15 @@
 import { readFile } from "node:fs/promises";
 import { OpenFgaClient } from "@openfga/sdk";
 import { transformer } from "@openfga/syntax-transformer";
-import { BASE_TUPLES, FILES, USERS, WHAT_IFS, buildCheckItems, fromCorrelationId } from "./scenario.js";
+import { BASE_TUPLES, FILES, USERS, WHAT_IFS, buildCheckItems, fromCorrelationId, requestContext } from "./scenario.js";
 
 export type Matrix = Record<string, Record<string, Record<string, boolean>>>;
 
+export type CheckOptions = { at?: Date };
+
 export type CheckAllResult = {
   matrix: Matrix;
+  at: string;
   total: number;
   allowedCount: number;
   elapsedMs: number;
@@ -15,10 +18,10 @@ export type CheckAllResult = {
 export type Authz = {
   storeId: string;
   modelDsl: string;
-  checkAll: () => Promise<CheckAllResult>;
+  checkAll: (opts?: CheckOptions) => Promise<CheckAllResult>;
   setWhatIf: (id: string, enabled: boolean) => Promise<void>;
   activeWhatIfs: () => string[];
-  listViewableFiles: (userId: string) => Promise<string[]>;
+  listViewableFiles: (userId: string, opts?: CheckOptions) => Promise<string[]>;
 };
 
 const MODEL_PATH = new URL("./model.fga", import.meta.url);
@@ -37,13 +40,13 @@ export async function createAuthz(opts: { apiUrl: string; storeName: string }): 
   const client = new OpenFgaClient({ apiUrl: opts.apiUrl, storeId: store.id, authorizationModelId: model.authorization_model_id });
 
   // Write API は 1 リクエスト 100 タプルまで。今回は 20 件程度なので一括で投入
-  await client.writeTuples(BASE_TUPLES.map(({ user, relation, object }) => ({ user, relation, object })));
+  await client.writeTuples(BASE_TUPLES.map(({ user, relation, object, condition }) => ({ user, relation, object, condition })));
 
   const active = new Set<string>();
 
-  async function checkAll(): Promise<CheckAllResult> {
+  async function checkAll({ at = new Date() }: CheckOptions = {}): Promise<CheckAllResult> {
     const started = performance.now();
-    const { result } = await client.batchCheck({ checks: buildCheckItems() });
+    const { result } = await client.batchCheck({ checks: buildCheckItems(at) });
     const elapsedMs = performance.now() - started;
 
     const matrix: Matrix = Object.fromEntries(USERS.map((u) => [u.id, Object.fromEntries(FILES.map((f) => [f.id, {}]))]));
@@ -54,7 +57,7 @@ export async function createAuthz(opts: { apiUrl: string; storeName: string }): 
       matrix[user][file][action] = r.allowed;
       if (r.allowed) allowedCount++;
     }
-    return { matrix, total: result.length, allowedCount, elapsedMs };
+    return { matrix, at: at.toISOString(), total: result.length, allowedCount, elapsedMs };
   }
 
   async function setWhatIf(id: string, enabled: boolean): Promise<void> {
@@ -67,8 +70,8 @@ export async function createAuthz(opts: { apiUrl: string; storeName: string }): 
     else active.delete(id);
   }
 
-  async function listViewableFiles(userId: string): Promise<string[]> {
-    const res = await client.listObjects({ user: `user:${userId}`, relation: "can_view", type: "file" });
+  async function listViewableFiles(userId: string, { at = new Date() }: CheckOptions = {}): Promise<string[]> {
+    const res = await client.listObjects({ user: `user:${userId}`, relation: "can_view", type: "file", context: requestContext(at) });
     return res.objects.map((o) => o.replace(/^file:/, ""));
   }
 

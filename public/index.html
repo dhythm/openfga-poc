@@ -63,6 +63,13 @@
   ul.tuples li { padding: 4px 0; border-bottom: 1px dashed var(--line); }
   ul.tuples code { color: var(--muted); font-size: 11px; }
   .error { color: #f04438; font-weight: 600; }
+  .at-input { width: 100%; padding: 6px 8px; border: 1px solid var(--line); border-radius: 8px;
+    background: var(--bg); color: var(--text); font: inherit; }
+  .btns { display: flex; gap: 6px; margin-top: 8px; flex-wrap: wrap; }
+  .btns button { flex: 1; padding: 6px 8px; border: 1px solid var(--line); border-radius: 8px;
+    background: var(--panel); color: var(--text); font: inherit; font-size: 12px; cursor: pointer; }
+  .btns button:hover { border-color: var(--accent); color: var(--accent); }
+  code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; }
   @media (max-width: 900px) {
     .layout, .grid2 { grid-template-columns: 1fr; }
     .stats { grid-template-columns: repeat(2, 1fr); }
@@ -91,6 +98,18 @@
 
     <aside class="side">
       <section class="panel">
+        <h2>判定時刻（condition）</h2>
+        <p class="muted" style="margin:0 0 8px">Erin への納品物の共有は <b id="expires">–</b> まで有効な<b>期限付き共有</b>。
+          判定時の <code>current_time</code> を変えると結果が変わります。</p>
+        <input type="datetime-local" id="at-input" class="at-input">
+        <div class="btns">
+          <button type="button" data-at="now">現在</button>
+          <button type="button" data-at="before">期限の前日</button>
+          <button type="button" data-at="after">期限の翌日</button>
+        </div>
+        <p class="muted" style="margin:8px 0 0">判定時刻: <span id="at-label">–</span></p>
+      </section>
+      <section class="panel">
         <h2>もしも…（関係タプルを追加/削除）</h2>
         <div id="whatifs"></div>
       </section>
@@ -117,7 +136,18 @@
 <script>
   const $ = (id) => document.getElementById(id);
   const esc = (s) => String(s).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]);
-  let meta, prev = null, selectedUser = null;
+  let meta, prev = null, selectedUser = null, at = null; // at: 判定時刻(ISO)。null は現在時刻
+  const atQuery = () => (at ? `at=${encodeURIComponent(at)}` : "");
+  const fmt = (iso) => new Date(iso).toLocaleString("ja-JP", { dateStyle: "medium", timeStyle: "short" });
+  const toLocalInput = (iso) => {
+    const d = new Date(iso);
+    return new Date(d.getTime() - d.getTimezoneOffset() * 60000).toISOString().slice(0, 16);
+  };
+
+  async function setAt(next) {
+    at = next;
+    try { renderResult(await api(`/api/check?${atQuery()}`)); } catch (e) { showError(e); }
+  }
 
   async function api(path, init) {
     const res = await fetch(path, init);
@@ -148,6 +178,20 @@
         <span>${esc(w.label)}<code>${esc(w.tuple.user)} → ${esc(w.tuple.relation)} → ${esc(w.tuple.object)}</code></span></label>`).join("");
     $("whatifs").querySelectorAll("input").forEach((el) => el.addEventListener("change", () => toggle(el)));
 
+    const expiresAt = meta.shareGrant.expiresAt;
+    $("expires").textContent = fmt(expiresAt);
+    const DAY = 24 * 60 * 60 * 1000;
+    const presets = {
+      now: () => null,
+      before: () => new Date(Date.parse(expiresAt) - DAY).toISOString(),
+      after: () => new Date(Date.parse(expiresAt) + DAY).toISOString(),
+    };
+    document.querySelectorAll(".btns button").forEach((b) => b.addEventListener("click", () => setAt(presets[b.dataset.at]())));
+    $("at-input").addEventListener("change", (e) => {
+      const v = e.target.value;
+      setAt(v ? new Date(v).toISOString() : null);
+    });
+
     $("model").textContent = meta.modelDsl;
     $("tuples").innerHTML = meta.tuples.map((t) =>
       `<li>${esc(t.note)}<br><code>${esc(t.user)} · ${esc(t.relation)} · ${esc(t.object)}</code></li>`).join("");
@@ -158,6 +202,8 @@
     $("s-allow").textContent = r.allowedCount;
     $("s-deny").textContent = r.total - r.allowedCount;
     $("s-ms").textContent = `${r.elapsedMs.toFixed(0)} ms`;
+    $("at-label").textContent = `${fmt(r.at)}${at ? "" : "（現在）"}`;
+    $("at-input").value = toLocalInput(r.at);
     const changes = [];
     for (const u of meta.users) for (const f of meta.files) for (const a of meta.actions) {
       const v = r.matrix[u.id][f.id][a.relation];
@@ -173,7 +219,7 @@
     meta.whatIfs.forEach((w) => { $("whatifs").querySelector(`[data-id="${w.id}"]`).checked = r.activeWhatIfs.includes(w.id); });
     if (prev) {
       $("diff").innerHTML = changes.length
-        ? `タプル1件の変更で <b>${changes.length}件</b> の判定が変化: ${esc(changes.join(" / "))}`
+        ? `<b>${changes.length}件</b> の判定が変化: ${esc(changes.join(" / "))}`
         : `判定の変化はありません`;
     }
     prev = r;
@@ -184,7 +230,7 @@
     document.querySelectorAll("#whatifs input").forEach((x) => (x.disabled = true));
     try {
       renderResult(await api("/api/what-if", { method: "POST", headers: { "content-type": "application/json" },
-        body: JSON.stringify({ id: el.dataset.id, enabled: el.checked }) }));
+        body: JSON.stringify({ id: el.dataset.id, enabled: el.checked, at: at ?? undefined }) }));
     } catch (e) { el.checked = !el.checked; showError(e); }
     finally { document.querySelectorAll("#whatifs input").forEach((x) => (x.disabled = false)); }
   }
@@ -195,7 +241,7 @@
     const user = meta.users.find((u) => u.id === userId);
     $("lo-user").textContent = user.name;
     try {
-      const { files } = await api(`/api/list-objects?user=${encodeURIComponent(userId)}`);
+      const { files } = await api(`/api/list-objects?user=${encodeURIComponent(userId)}&${atQuery()}`);
       const names = meta.files.filter((f) => files.includes(f.id)).map((f) => f.name);
       $("lo-files").innerHTML = names.length ? names.map((n) => `<span class="chip">${esc(n)}</span>`).join("") : `<span class="muted">なし</span>`;
     } catch (e) { showError(e); }

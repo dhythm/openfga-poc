@@ -1,0 +1,27 @@
+{
+  "name": "openfga-poc",
+  "version": "1.0.0",
+  "description": "",
+  "main": "index.js",
+  "scripts": {
+    "fga:up": "docker compose up -d",
+    "fga:down": "docker compose down",
+    "dev": "tsx src/server.ts",
+    "test": "vitest run",
+    "typecheck": "tsc"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "module",
+  "dependencies": {
+    "@openfga/sdk": "^0.9.8",
+    "@openfga/syntax-transformer": "^0.2.2"
+  },
+  "devDependencies": {
+    "@types/node": "^26.6.6",
+    "tsx": "^4.23.15",
+    "typescript": "^7.0.2",
+    "vitest": "^5.1.0"
+  }
+}

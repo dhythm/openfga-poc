@@ -1,0 +1,33 @@
+model
+  schema 1.1
+
+# メンバー（人）
+type user
+
+# 組織: owner ⊂ admin ⊂ member の包含関係
+type organization
+  relations
+    define owner: [user]
+    define admin: [user] or owner
+    define member: [user] or admin
+
+# プロジェクト: 組織の admin は自動的に全プロジェクトの manager
+type project
+  relations
+    define organization: [organization]
+    define manager: [user] or admin from organization
+    define editor: [user] or manager
+    define viewer: [user, organization#member] or editor
+
+# ファイル: プロジェクトの権限を継承しつつ、個別共有と閲覧禁止(but not)が可能
+type file
+  relations
+    define project: [project]
+    define owner: [user]
+    define editor: [user] or owner or editor from project
+    define viewer: [user] or editor or viewer from project
+    define restricted: [user]
+    define can_view: viewer but not restricted
+    define can_edit: editor but not restricted
+    define can_delete: (owner or manager from project) but not restricted
+    define can_share: (owner or manager from project) but not restricted
